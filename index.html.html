@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Manager</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+
+<style>
+body{font-family:system-ui;margin:0;background:#f5f6fa}
+.container{max-width:650px;margin:auto;padding:12px}
+.card{background:#fff;padding:14px;margin-bottom:12px;border-radius:14px;box-shadow:0 2px 6px rgba(0,0,0,0.05)}
+input,button{width:100%;margin-top:8px;padding:12px;border-radius:10px;border:1px solid #ddd;font-size:15px}
+button{background:#6366F1;color:#fff;border:none}
+.item{display:flex;justify-content:space-between;padding:10px;border-bottom:1px solid #eee;cursor:pointer}
+.low{color:red;font-weight:bold}
+small{color:#666}
+</style>
+</head>
+
+<body>
+<div class="container">
+
+<div class="card">
+<h3>Scan Barcode</h3>
+<div id="reader" style="width:100%"></div>
+<button onclick="startScanner()">Start Scanner</button>
+<button onclick="stopScanner()">Stop Scanner</button>
+</div>
+
+<div class="card">
+<h3>Sell</h3>
+<input id="saleName" placeholder="Item">
+<input id="saleQty" type="number" placeholder="Quantity">
+<input id="saleDate" type="date">
+<button onclick="addSale()">Sell</button>
+</div>
+
+<div class="card">
+<h3>Stock</h3>
+<div id="stockList"></div>
+</div>
+
+<div class="card">
+<h3>Add Item</h3>
+<input id="itemName" placeholder="Item">
+<input id="itemQty" type="number" placeholder="Quantity">
+<input id="lowStock" type="number" placeholder="Low alert">
+<button onclick="addItem()">Add</button>
+</div>
+
+<div class="card">
+<h3>Export Barcodes</h3>
+<button onclick="exportBarcodes()">Download Barcode PDF</button>
+</div>
+
+<div class="card">
+<h3>Sales</h3>
+<div id="salesList"></div>
+</div>
+
+</div>
+
+<script>
+const { jsPDF } = window.jspdf;
+
+let stock = JSON.parse(localStorage.getItem('stock')) || {};
+let sales = JSON.parse(localStorage.getItem('sales')) || [];
+let scanner=null;
+let scannerRunning=false;
+
+window.onload = ()=>{
+ document.getElementById('saleDate').valueAsDate=new Date();
+ render();
+};
+
+function save(){
+ localStorage.setItem('stock', JSON.stringify(stock));
+ localStorage.setItem('sales', JSON.stringify(sales));
+}
+
+function norm(n){ return n.trim().toLowerCase(); }
+
+function generateBarcode(){
+ return 'BC'+Date.now()+Math.floor(Math.random()*1000);
+}
+
+function addItem(){
+ let raw=itemName.value.trim();
+ let name=norm(raw);
+ let qty=parseInt(itemQty.value);
+ let low=parseInt(lowStock.value)||0;
+
+ if(!name||isNaN(qty)||qty<=0) return alert("Invalid");
+
+ if(!stock[name]){
+  stock[name]={qty:0,low,display:raw,barcode:generateBarcode()};
+ }
+
+ stock[name].qty+=qty;
+
+ itemName.value="";
+ itemQty.value="";
+ lowStock.value="";
+
+ save();render();
+}
+
+function addSale(){
+ let name=norm(saleName.value);
+ let qty=parseInt(saleQty.value);
+ let date=saleDate.value;
+
+ if(!stock[name]) return alert("Item not found");
+ if(isNaN(qty)||qty<=0||!date) return alert("Invalid");
+ if(stock[name].qty<qty) return alert("Low stock");
+
+ stock[name].qty-=qty;
+ sales.push({name,qty,date});
+
+ saleName.value="";
+ saleQty.value="";
+ saleName.focus();
+
+ save();render();
+}
+
+async function startScanner(){
+ if(scannerRunning) return;
+
+ try{
+  scanner=new Html5Qrcode("reader");
+  const devices=await Html5Qrcode.getCameras();
+  if(!devices.length) return alert("No camera");
+
+  const cam=devices.find(d=>d.label.toLowerCase().includes("back"))||devices[0];
+
+  await scanner.start(cam.id,{fps:10,qrbox:250},decoded=>{
+    for(let k in stock){
+      if(stock[k].barcode===decoded){
+        saleName.value=stock[k].display;
+        saleQty.focus();
+        stopScanner();
+        return;
+      }
+    }
+    alert("Not found");
+  });
+
+  scannerRunning=true;
+
+ }catch(e){
+  alert("Camera not working. Use HTTPS + allow permission.");
+ }
+}
+
+function stopScanner(){
+ if(scanner && scannerRunning){
+  scanner.stop().then(()=>{scanner.clear();scannerRunning=false;});
+ }
+}
+
+function editStock(name){
+ let q=prompt("Edit quantity",stock[name].qty);
+ if(q===null) return;
+ q=parseInt(q);
+ if(isNaN(q)||q<0) return alert("Invalid");
+ stock[name].qty=q;
+ save();render();
+}
+
+function selectItem(name){
+ saleName.value=stock[name].display;
+ saleQty.focus();
+}
+
+function render(){
+ stockList.innerHTML='';
+ Object.keys(stock).sort().forEach(k=>{
+  let s=stock[k];
+  stockList.innerHTML+=`
+   <div class="item" onclick="selectItem('${k}')">
+    <span onclick="event.stopPropagation();editStock('${k}')">
+    ${s.display}<br><small>${s.barcode}</small>
+    </span>
+    <span class="${s.qty<=s.low?'low':''}">${s.qty}</span>
+   </div>`;
+ });
+
+ salesList.innerHTML='';
+ sales.sort((a,b)=>new Date(b.date)-new Date(a.date));
+ sales.forEach(s=>{
+  salesList.innerHTML+=`
+   <div class="item">
+    <span>${stock[s.name]?.display||s.name} (${s.qty})</span>
+    <span>${s.date}</span>
+   </div>`;
+ });
+}
+
+function exportBarcodes(){
+ if(Object.keys(stock).length===0) return alert("No items");
+
+ let doc=new jsPDF();
+ let y=20;
+ let canvas=document.createElement("canvas");
+
+ doc.text("Barcodes",10,10);
+
+ Object.keys(stock).forEach((k,i)=>{
+  let item=stock[k];
+
+  JsBarcode(canvas,item.barcode,{
+    format:"CODE128",
+    width:2,
+    height:40,
+    displayValue:true
+  });
+
+  let img=canvas.toDataURL("image/png");
+
+  doc.text(item.display,10,y);
+  doc.addImage(img,"PNG",10,y+2,100,30);
+
+  y+=45;
+
+  if(y>260){
+    doc.addPage();
+    y=20;
+  }
+ });
+
+ doc.save("barcodes.pdf");
+}
+
+render();
+</script>
+
+</body>
+</html>
